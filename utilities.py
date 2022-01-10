@@ -13,39 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import numpy as np
+import os
 from numba import njit
+from sys import platform
+if platform == "linux" or platform == "linux2":
+    import resource
 
 
-@njit(fastmath=True, cache=True)
-def conditional_probability(k, i, r, a, p, d):
-    """
-    Calculates the conditional probability to be used for the calculation of the a priori probabilities.
-    :param k: The discretized variable.
-    :param i: The value of the bin.
-    :param r: The correlation parameter.
-    :param a: The discretization cut-off parameter.
-    :param p: The number of bins exponent.
-    :param d: The constant-size interval divider.
-    :return: The conditional probability P(K|X).
-    """
+def percent_to_decibel_conversion(x):
+    return 10 * np.log10(x)
 
-    if i == 0:
-        ak = -np.inf
-        bk = -a + d
-    elif i == 2 ** p - 1:
-        ak = -a + (2 ** p - 1) * d
-        bk = np.inf
-    else:
-        ak = -a + i * d
-        bk = -a + (i + 1) * d
 
-    A = (ak - k * r) / np.sqrt(2 * (1 - r ** 2))
-    B = (bk - k * r) / np.sqrt(2 * (1 - r ** 2))
-    prob = 0.5 * (math.erf(B) - math.erf(A))
-
-    return prob
+def decibel_to_percent_conversion(x):
+    return 10 ** (x / 10)
 
 
 def q_ary_to_binary(m, q):
@@ -62,3 +43,19 @@ def q_ary_to_binary(m, q):
         for j in range(q):
             mA_bin[i * q + j] = bitsA[j]
     return mA_bin
+
+
+def peak_memory_measurement(proc):
+    """"
+    Measures the peak memory consumption of the software in MiB the until a certain runtime point.
+    :param proc: The current process.
+    """
+
+    if os.name == "nt":  # Works only in Windows systems
+        mem = proc.memory_full_info().peak_wset / 2 ** 20  # Original measurement in bytes
+    else:
+        mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Original measurement in KiB
+    return mem
+
+
+

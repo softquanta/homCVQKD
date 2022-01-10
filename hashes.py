@@ -14,8 +14,11 @@
 # limitations under the License.
 
 import numpy as np
+import maths
+import scipy.fft as sp_fft
 import scipy.linalg as sp
 import random
+from numba import get_num_threads
 
 
 def privacy_amplification(s, n, r, mode):
@@ -34,32 +37,36 @@ def privacy_amplification(s, n, r, mode):
 
     if mode == 0:  # Toeplitz to circulant matrix with fast Fourier transforms (complexity O(nlogn))
         # The Toeplitz matrix is reformed into a circulant matrix by merging its first row and column together. Since
-        # the former has dimensions ̃n×r, the length of the definition of the latter becomes ̃n + r − 1.
+        # the former has dimensions ̃n × r, the length of the definition of the latter becomes ̃n + r − 1.
 
         # Delete the first entry from the row and reverse it for the addition into circulant matrix definition
         rrow = np.delete(row, 0)
         rrow = rrow[::-1]
 
-        # Define the circulant matrix definition and ensure the length is n + r - 1
+        # Define the circulant matrix definition and ensure the length is ̃n + r - 1
         c_def = np.hstack((col, rrow)).astype(np.uint8)
         assert len(c_def) == n + r - 1
 
-        # The decoded sequence to be compressed is extended, as r−1 zeros are padded to its end
+        # The decoded sequence to be compressed is extended, as r − 1 zeros are padded to its end
         s_ext = np.hstack((s, np.zeros(r - 1))).astype(np.uint8)
 
         # To efficiently calculate the key, an optimized multiplication is carried out using the fast Fourier transform.
         # Because of the convolution theorem, the * operator signifies the Hadamard product and therefore element-wise
         # multiplication can be performed.
-        fft = np.fft.ifft(np.multiply(np.fft.fft(c_def), np.fft.fft(s_ext)))
+        try:
+            conv = maths.convolution_theorem(c_def, s_ext)
+        except MemoryError:
+            print("There was not enough memory to form a secret key. A zero key will be returned.")
+            return 0
 
         # As the key format is required to be in bits, the result of the inverse fast Fourier transform is taken mod 2.
-        fft_bits = (np.round(np.real(fft)) % 2).astype(np.uint8)
+        fft_bits = (np.round(np.real(conv)) % 2).astype(np.uint8)
 
-        # The key is constituted by the first r bits of the resulting bit string of length ̃n + r − 1
+        # The key is constituted by the first r bits of the resulting bit string of length  ̃n + r − 1
         k = fft_bits[:r]
 
     else:  # Toeplitz Matrix with dot product calculation (complexity O(n^2))
-        t = np.array(sp.toeplitz(col, row), dtype=np.uint8)
+        t = np.array(sp.toeplitz(col, row), dtype=np.uint8)  # Only for verification purposes
         k = np.dot(t, s) % 2
 
     return k

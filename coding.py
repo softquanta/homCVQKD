@@ -14,8 +14,9 @@
 # limitations under the License.
 
 import galois
-import utilities
+import maths
 import numpy as np
+import numba as nb
 from numba import njit, prange
 from numba.typed import Dict
 
@@ -38,14 +39,14 @@ def a_priori_probabilities(x, k_ubar, f, rho, a, p, dlt, d):
 
     pr = []
     for i in prange(len(x)):
-        cond_prob = np.empty(len(f), dtype=np.float64)
+        cond_prob = np.empty(len(f), dtype=np.float32)
         for k in prange(len(f)):
-            cond_prob[k] = utilities.conditional_probability(x[i], k * 2 ** d + k_ubar[i], rho, a, p, dlt)
+            cond_prob[k] = maths.conditional_probability(x[i], k * 2 ** d + k_ubar[i], rho, a, p, dlt)
         pr.append(cond_prob / np.sum(cond_prob))
     return pr
 
 
-@njit(cache=True)
+#@njit(cache=True)
 def q_ary_syndrome_calculation(c, m, gf_add, gf_mul, vals, rows):
     """
     Returns the q-ary nonzero syndrome of a codeword with a parity-check matrix. The syndrome is found using precomputed
@@ -63,7 +64,7 @@ def q_ary_syndrome_calculation(c, m, gf_add, gf_mul, vals, rows):
     return s
 
 
-def q_ary_decode(n, m, sB, iter_max, f, p, rows, cols, cols_exc, tA, tM, ps_top, pr_top, ps_bottom, pr_bottom, vals,
+def q_ary_decode(n, m, sB, iter_max, f, pr, rows, cols, cols_exc, tA, tM, ps_top, pr_top, ps_bottom, pr_bottom, vals,
                  rmn_i1, rmn_i2, rmn_i3):
     """
     Performs the sum-Product algorithm given a set of a priori probabilities to produce a q-ary codeword.
@@ -72,7 +73,7 @@ def q_ary_decode(n, m, sB, iter_max, f, p, rows, cols, cols_exc, tA, tM, ps_top,
     :param sB: Bob's syndrome to be evaluated with Alice's syndrome.
     :param iter_max: The maximum number of iterations the belief propagation algorithm will run for.
     :param f: The Galois Field of the computations.
-    :param p: The a priori probabilities for the initialization step.
+    :param pr: The a priori probabilities for the initialization step.
     :param vals: The nonzero values of the parity-check matrix.
     :param rows: The check nodes of the parity-check matrix.
     :param cols: The variable nodes of the parity-check matrix.
@@ -94,24 +95,27 @@ def q_ary_decode(n, m, sB, iter_max, f, p, rows, cols, cols_exc, tA, tM, ps_top,
     if n < 1000:
         x = np.empty(shape=n, dtype=np.int16)
         for i in prange(n):
-            x[i] = np.argmax(p[i])
+            x[i] = np.argmax(pr[i])
         sA = q_ary_syndrome_calculation(x, m, tA, tM, vals, rows)
         if (sA == sB).all():
             return x, True, 0
 
     # Step 1: Initialization
-    q, q_mn, r_mn, p_s, p_r = initialization(m, p, rows, f)
+    q_mn = Dict.empty(key_type=nb.types.Tuple((nb.int16, nb.int32)), value_type=nb.types.float32[::1])
+    r_mn = Dict.empty(key_type=nb.types.Tuple((nb.int16, nb.int32)), value_type=nb.types.float32[::1])
+    p_s = Dict.empty(key_type=nb.types.Tuple((nb.int16, nb.int32)), value_type=nb.types.float32[::1])
+    p_r = Dict.empty(key_type=nb.types.Tuple((nb.int16, nb.int32)), value_type=nb.types.float32[::1])
+    q_mn, r_mn, p_s, p_r = initialization(m, pr, rows, f, q_mn, r_mn, p_s, p_r)
 
     for it in prange(1, iter_max + 1):
-
         # Step 2: Horizontal Step (Update r)
-        r_mn = update_r_mn(m, f, q, rows, r_mn, p_s, p_r, rmn_i1, rmn_i2, rmn_i3, ps_top, pr_top, ps_bottom, pr_bottom)
+        r_mn = update_r_mn(m, f, q_mn, rows, r_mn, p_s, p_r, rmn_i1, rmn_i2, rmn_i3, ps_top, pr_top, ps_bottom, pr_bottom)
 
         # Step 3: Vertical Step (Update q)
-        q = update_q_mn(n, f, r_mn, cols, cols_exc, q_mn, p)
+        q_mn = update_q_mn(n, f, r_mn, cols, cols_exc, q_mn, pr)
 
         # Step 4: Tentative Decoding
-        x = tentative_decoding(n, f, r_mn, p, cols)
+        x = tentative_decoding(n, f, r_mn, pr, cols)
 
         sA = q_ary_syndrome_calculation(x, m, tA, tM, vals, rows)
 
@@ -123,22 +127,16 @@ def q_ary_decode(n, m, sB, iter_max, f, p, rows, cols, cols_exc, tA, tM, ps_top,
 
 
 @njit(fastmath=True, parallel=False, cache=True)
-def initialization(m, p, rows, f):
-    Q = Dict()
-    q_mn = Dict()
-    r_mn = Dict()
-    p_s = Dict()
-    p_r = Dict()
+def initialization(m, p, rows, f, q_mn, r_mn, p_s, p_r):
     for i in prange(0, m):
         for j in prange(0, len(rows[i])):
             row = rows[i][j]  # Speed upgrade
-            Q[(i, row)] = p[row]
-            q_mn[(i, row)] = np.zeros(f, dtype=np.float32)
+            q_mn[(i, row)] = p[row]
             r_mn[(i, row)] = np.zeros(f, dtype=np.float32)
             p_s[(i, row)] = np.zeros(f, dtype=np.float32)
             p_r[(i, row)] = np.zeros(f, dtype=np.float32)
 
-    return Q, q_mn, r_mn, p_s, p_r
+    return q_mn, r_mn, p_s, p_r
 
 
 @njit(fastmath=True, parallel=True, cache=True)
@@ -213,7 +211,7 @@ def tentative_decoding(n, f, r, p, cols):
 
 
 @njit(fastmath=True, parallel=False, cache=True)
-def get_partial_sums_indices(m, f, H, rows, tA, tM):
+def get_partial_sums_indices(m, f, H, rows, tA, tM, ps_first, pr_first, ps_rest, pr_rest):
     """
     Precompute the indices for the partial sum probabilities.
     :param m: The number of rows of the parity-check matrix.
@@ -225,11 +223,6 @@ def get_partial_sums_indices(m, f, H, rows, tA, tM):
     :return: The indices of the partial sums for the non-binary decoding process.
     """
 
-    ps_first = Dict()
-    pr_first = Dict()
-    ps_rest = Dict()
-    pr_rest = Dict()
-
     for i in prange(0, m):
         row_i = rows[i]  # Speed upgrade
         k = len(row_i) - 1
@@ -238,7 +231,7 @@ def get_partial_sums_indices(m, f, H, rows, tA, tM):
                 if tM[H[i][row_i[0]], t] == a:
                     ps_first[(i, 0, a)] = t
                     break
-            for t in range(f):
+            for t in range(0, f):
                 if tM[H[i][row_i[k]], t] == a:
                     pr_first[(i, k, a)] = t
                     break
@@ -246,21 +239,22 @@ def get_partial_sums_indices(m, f, H, rows, tA, tM):
             k = len(row_i) - 1 - j
             row_j = row_i[j]  # Speed upgrade
             row_k = row_i[k]  # Speed upgrade
-            for a in range(f):
-                for t in range(f):
-                    for s in range(f):
+            for a in range(0, f):
+                for t in range(0, f):
+                    for s in range(0, f):
                         if tA[tM[H[i][row_j], t], s] == a:
                             ps_rest[(i, j, a, t)] = s
                             break
-                    for s in range(f):
+                    for s in range(0, f):
                         if tA[tM[H[i][row_k], t], s] == a:
                             pr_rest[(i, k, a, t)] = s
                             break
+
     return ps_first, pr_first, ps_rest, pr_rest
 
 
 @njit(fastmath=True, parallel=False, cache=True)
-def get_rmn_indices(m, f, H, z, rows, tA, tM):
+def get_rmn_indices(m, f, H, z, rows, tA, tM, r_ind_1, r_ind_2, r_ind_3):
     """
     Precompute the indices to be used during the r_mn stage.
     :param m: The number of rows of the parity-check matrix.
@@ -272,10 +266,6 @@ def get_rmn_indices(m, f, H, z, rows, tA, tM):
     :param tM: The Galois field precomputed multiplication table.
     :return: The indices of the partial sums for the non-binary decoding process.
     """
-
-    r_ind_1 = Dict()
-    r_ind_2 = Dict()
-    r_ind_3 = Dict()
 
     for i in prange(0, m):
         rows_i = rows[i]  # Speed upgrade
